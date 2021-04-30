@@ -1,4 +1,5 @@
 #include <iostream>
+#include "algo/Vamana.h"
 
 int
 main() {
