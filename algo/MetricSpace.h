@@ -32,7 +32,15 @@ class MetricSpace {
         return full_dist(pa, pb, &dim);
     }
 
+    inline dist_t post_half(const void* pa, const void* pb, const void* pd) {
+        size_t dim = *((size_t*)pd);
+        auto ppa = (char*)const_cast<void*>(pa);
+        auto ppb = (char*)const_cast<void*>(pb);
+        return full_dist(ppa + (dim >> 1) * esize, ppb + (dim >> 1) * esize, dim - (dim >> 1));
+    }
+
     DISTANCE<dist_t> dis_func_ = nullptr;
+    short esize;
 };
 
 
@@ -42,6 +50,7 @@ class L2SpaceF: public MetricSpace<float> {
  public:
     L2SpaceF(const size_t dim) {
         dis_func_ = L2SquareF;
+        esize = sizeof(float);
         // todo: instruction optimization
     }
     float full_dist(const void* pa, const void* pb, const void* pd) {
@@ -56,6 +65,7 @@ class IPSapceF: public MetricSpace<float> {
  public:
     IPSapceF(const size_t dim) {
         dis_func_ = InnerProductF;
+        esize = sizeof(float);
         // todo: instruction optimization
     }
     float full_dist(const void* pa, const void* pb, const void* pd) {
