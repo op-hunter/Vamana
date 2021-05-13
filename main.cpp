@@ -104,12 +104,13 @@ main() {
     std::ifstream finn("ground_truth_100.bin.2", std::ios::binary);
     for (unsigned i = 0; i < nq; i ++) {
         finn.read((char*)&sz, 8);
-        std::cout << "query " << i + 1 << " has " << sz << " groundtruth ans." << std::endl;
+//        std::cout << "query " << i + 1 << " has " << sz << " groundtruth ans." << std::endl;
         groundtruth[i].resize(sz);
         finn.read((char*)groundtruth[i].data(), k * 16);
     }
     finn.close();
 
+    /*
     std::cout << "show groundtruth:" << std::endl;
     for (size_t i = 0; i < groundtruth.size(); i ++) {
         for (size_t j = 0; j < k; j ++) {
@@ -127,6 +128,7 @@ main() {
         }
         std::cout << std::endl;
     }
+    */
 
     // calculate recall@k
     int tot_cnt = 0;

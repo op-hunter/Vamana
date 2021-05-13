@@ -220,8 +220,7 @@ class Vamana {
         size_t tot_sz = 0;
 #pragma omp parallel for schedule(dynamic, 100)
         for (idx_t i = 0; i < ntotal_; i ++) {
-            maxHeap candidates;
-            search(pd + i * dim_, candidates);
+            maxHeap candidates = search(pd + i * dim_, L_);
 #pragma omp critical
             {
                 round1[candidates.size()] ++;
@@ -253,8 +252,7 @@ class Vamana {
             if (i % 100000 == 0) {
                 std::cout << "iteration round 2, i = " << i << " done." << std::endl;
             }
-            maxHeap candidates;
-            search(pd + i * dim_, candidates);
+            maxHeap candidates = search(pd + i * dim_, L_);
 #pragma omp critical
             {
                 round2[candidates.size()] ++;
@@ -280,14 +278,15 @@ class Vamana {
         std::cout << "HealthyCheck after 2nd iteration finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(tend - tstart).count() << " ms." << std::endl;
     }
 
-    maxHeap search(const void* qp, maxHeap& neighbor_candi) {
+    maxHeap search(const void* qp, const size_t topk) {
         std::vector<bool> vis(ntotal_, false);
         maxHeap resultset;
         maxHeap expandset;
+        maxHeap neighbor_candi;
         expandset.emplace(-ms_->full_dist(getDataByID(sp_), qp, &dim_), sp_);
         vis[sp_] = true;
         dist_t lowerBound = -expandset.top().first;
-        neighbor_candi.emplace(expandset.top());
+        neighbor_candi.emplace(lowerBound, sp_);
         while (expandset.size()) {
             auto cur = expandset.top();
             assert(cur.second < ntotal_);
@@ -306,22 +305,30 @@ class Vamana {
                 vis[candi_id] = true;
                 auto candi_data = getDataByID(candi_id);
                 auto dist = ms_->full_dist(qp, candi_data, &dim_);
-                if (resultset.size() < L_ || dist < lowerBound) {
+                if (resultset.size() < topk || dist < lowerBound) {
                     expandset.emplace(-dist, candi_id);
-                    neighbor_candi.emplace(-dist, candi_id);
+                    neighbor_candi.emplace(dist, candi_id);
                     resultset.emplace(dist, candi_id);
-                    if (resultset.size() > L_)
+                    if (resultset.size() > topk)
                         resultset.pop();
                     if (!resultset.empty())
                         lowerBound = resultset.top().first;
+                    if (neighbor_candi.size() > L_ * 2)
+                        neighbor_candi.pop();
                 }
             }
+        }
+        while (!resultset.empty())
+            resultset.pop();
+        assert(resultset.size() == 0);
+        while (!neighbor_candi.empty()) {
+            resultset.emplace(-neighbor_candi.top().first, neighbor_candi.top().second);
+            neighbor_candi.pop();
         }
         return resultset;
     }
 
      maxHeap search(const void* qp, const size_t sp, const size_t topk) {
-        size_t ub = L_ < topk ? topk : L_;
         std::vector<bool> vis(ntotal_, false);
         maxHeap resultset;
         maxHeap expandset;
@@ -348,10 +355,10 @@ class Vamana {
                 vis[candi_id] = true;
                 auto candi_data = getDataByID(candi_id);
                 auto dist = ms_->full_dist(qp, candi_data, &dim_);
-                if (resultset.size() < ub || dist < lowerBound) {
+                if (resultset.size() < topk || dist < lowerBound) {
                     expandset.emplace(-dist, candi_id);
                     resultset.emplace(dist, candi_id);
-                    if (resultset.size() > ub)
+                    if (resultset.size() > topk)
                         resultset.pop();
                     if (!resultset.empty())
                         lowerBound = resultset.top().first;
