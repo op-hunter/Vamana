@@ -390,7 +390,7 @@ class Vamana {
             cand_set.pop();
             bool good = true;
             for (auto j = 1; j <= *link; j ++) {
-                assert(link[j] != cur.second);
+//                assert(link[j] != cur.second);
                 auto dist = ms_->full_dist(getDataByID(cur.second), getDataByID(link[j]), &dim_);
                 if (dist * alpha < -cur.first) {
                     good = false;
@@ -459,7 +459,7 @@ class Vamana {
             total += std::abs((int)(*link) - (int)(ns.size()));
 //            assert(ns.size() == (*link));
         }
-        std::cout << "scan_graph done, total = " << total << std::endl;
+        std::cout << "scan_graph done, duplicate total = " << total << std::endl;
     }
 
  private:
