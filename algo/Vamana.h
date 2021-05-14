@@ -216,17 +216,12 @@ class Vamana {
 
         // step2: do the first iteration with alpha = 1
         auto tstart = std::chrono::high_resolution_clock::now();
-        std::unordered_map<idx_t, int> round1;
         size_t tot_sz = 0;
 #pragma omp parallel for schedule(dynamic, 100)
         for (idx_t i = 0; i < ntotal_; i ++) {
-            maxHeap candidates = search(pd + i * dim_, L_);
-#pragma omp critical
-            {
-                round1[candidates.size()] ++;
-            }
+            auto candidates = search2(pd + i * dim_, L_);
             robustPrune(i, candidates, 1.0, 1);
-            make_edge(i, 1.0);
+            make_edge2(i, 1.0);
         }
         auto tend = std::chrono::high_resolution_clock::now();
         std::cout << "the first round iteration finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(tend - tstart).count() << " ms." << std::endl;
@@ -237,45 +232,74 @@ class Vamana {
         tend = std::chrono::high_resolution_clock::now();
         std::cout << "HealthyCheck after 1st iteration finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(tend - tstart).count() << " ms." << std::endl;
 
-        std::cout << "show candidate_set size:" << std::endl;
-        for (auto &kv: round1) {
-            std::cout << "size = " << kv.first << ", cnt = " << kv.second << std::endl;
-            tot_sz += kv.first * kv.second;
-        }
-        std::cout << "average size of candidate set after 1st round iteration = " << (double)tot_sz / ntotal_ << std::endl;
-
         // step3: do the second iteration with alpha = alpha_
         tstart = std::chrono::high_resolution_clock::now();
-        std::unordered_map<idx_t, int> round2;
 #pragma omp parallel for schedule(dynamic, 100)
         for (int i = (int)(ntotal_ - 1); i >= 0; i --) {
             if (i % 100000 == 0) {
                 std::cout << "iteration round 2, i = " << i << " done." << std::endl;
             }
-            maxHeap candidates = search(pd + i * dim_, L_);
-#pragma omp critical
-            {
-                round2[candidates.size()] ++;
-            }
+            auto candidates = search2(pd + i * dim_, L_);
             robustPrune(i, candidates, alpha_, 2);
-            make_edge(i, alpha_);
+            make_edge2(i, alpha_);
         }
         tend = std::chrono::high_resolution_clock::now();
         std::cout << "the second round iteration finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(tend - tstart).count() << " ms." << std::endl;
-
-        std::cout << "show candidate_set size:" << std::endl;
-        tot_sz = 0;
-        for (auto &kv: round2) {
-            std::cout << "size = " << kv.first << ", cnt = " << kv.second << std::endl;
-            tot_sz += kv.first * kv.second;
-        }
-        std::cout << "average size of candidate set after 2nd round iteration = " << (double)tot_sz / ntotal_ << std::endl;
 
         std::cout << "HealthyCheck after the 2nd round iteration:" << std::endl;
         tstart = std::chrono::high_resolution_clock::now();
         HealthyCheck();
         tend = std::chrono::high_resolution_clock::now();
         std::cout << "HealthyCheck after 2nd iteration finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(tend - tstart).count() << " ms." << std::endl;
+    }
+
+    std::vector<std::pair<dist_t, idx_t>> search2(const void* qp, const size_t topk) {
+        std::vector<bool> vis(ntotal_, false);
+        maxHeap resultset;
+        maxHeap expandset;
+        std::vector<std::pair<dist_t, idx_t>> neighbor_candi;
+        expandset.emplace(-ms_->full_dist(getDataByID(sp_), qp, &dim_), sp_);
+        vis[sp_] = true;
+        int pos = 1;
+        int nbsz = L_ * 2 + 1;
+        dist_t lowerBound = -expandset.top().first;
+        neighbor_candi.resize(nbsz);
+        neighbor_candi[0] = std::pair<dist_t, idx_t>(lowerBound, sp_);
+        while (expandset.size()) {
+            auto cur = expandset.top();
+            assert(cur.second < ntotal_);
+            if ((-cur.first) > lowerBound)
+                break;
+            expandset.pop();
+            auto link = getLinkByID(cur.second);
+            auto linksz = *link;
+            assert(linksz <= R_);
+            std::unique_lock<std::mutex> lk(link_list_locks_[cur.second]);
+            for (auto i = 1; i <= linksz; i ++) {
+                auto candi_id = link[i];
+                // todo: prefetch
+                if (vis[candi_id])
+                    continue;
+                vis[candi_id] = true;
+                auto candi_data = getDataByID(candi_id);
+                auto dist = ms_->full_dist(qp, candi_data, &dim_);
+                if (resultset.size() < topk || dist < lowerBound) {
+                    expandset.emplace(-dist, candi_id);
+                    neighbor_candi[pos] = std::pair<dist_t, idx_t>(dist, candi_id);
+//                    neighbor_candi.emplace(dist, candi_id);
+                    adjust(neighbor_candi, pos);
+                    if (pos < nbsz - 1)
+                        pos ++;
+                    resultset.emplace(dist, candi_id);
+                    if (resultset.size() > topk)
+                        resultset.pop();
+                    if (!resultset.empty())
+                        lowerBound = resultset.top().first;
+                }
+            }
+        }
+
+        return neighbor_candi;
     }
 
     maxHeap search(const void* qp, const size_t topk) {
@@ -408,6 +432,43 @@ class Vamana {
         }
     }
 
+    // after robustPrune on node p, the neighbor of p is ordered ascend
+    void robustPrune(const idx_t p, std::vector<std::pair<dist_t, idx_t>>& candi_set, const float alpha, int flag) {
+        std::unique_lock<std::mutex> lock(link_list_locks_[p]);
+        auto link = getLinkByID(p);
+        *link = 0;
+        if (candi_set.size() <= R_) {
+            for (auto i = 0; i < candi_set.size(); i ++) {
+                if (i > 0 && candi_set[i].second == candi_set[i - 1].second)
+                    continue;
+                (*link) ++;
+                link[*link] = candi_set[i].second;
+            }
+        }
+        for (auto i = 0; i < candi_set.size(); i ++) {
+            if (*link >= R_)
+                break;
+            bool good = true;
+            auto cur_node = candi_set[i].second;
+            auto dist2cmp = candi_set[i].first;
+            for (auto j = 1; j <= *link; j ++) {
+                if (link[j] == cur_node) {
+                    good = false;
+                    break;
+                }
+                auto dist = ms_->full_dist(getDataByID(cur_node), getDataByID(link[j]), &dim_);
+                if (dist * alpha < dist2cmp) {
+                    good = false;
+                    break;
+                }
+            }
+            if (good) {
+                (*link) ++;
+                link[*link] = cur_node;
+            }
+        }
+    }
+
     bool isDuplicate(const idx_t p, const idx_t* link) {
         assert((*link) <= R_);
         for (auto i = 1; i <= *link; i ++) {
@@ -433,6 +494,72 @@ class Vamana {
                     pruneCandi.emplace(-dist, p);
                     for (auto j = 1; j <= *neighbor_link; j ++) {
                         pruneCandi.emplace(-ms_->full_dist(getDataByID(link[i]), getDataByID(neighbor_link[j]), &dim_), neighbor_link[j]);
+                    }
+                    robustPrune(link[i], pruneCandi, alpha, 3);
+                }
+            }
+        }
+    }
+
+    void adjust(std::vector<std::pair<dist_t, idx_t>>& candi, int pos = -1) {
+        if (pos < 0)
+            pos = (int)candi.size() - 1;
+        for (int i = pos; i > 0; i --) {
+            if (candi[i].first < candi[i - 1].first)
+                std::swap(candi[i], candi[i - 1]);
+            else
+                break;
+        }
+    }
+
+    int bin(idx_t* link, const dist_t cmp_dis) {
+        if (*link <= 4) {
+            for (int i = 1; i < *link; i ++) {
+                auto dis = ms_->full_dist(getDataByID(link[i]), link + R_ + 1, &dim_);
+                if (dis > cmp_dis)
+                    return i;
+            }
+        }
+        int l = 1;
+        int r = (*link) - 1;
+        while (l < r) {
+            int mid = (l + r) / 2;
+            if (ms_->full_dist(getDataByID(link[mid]), link + R_ + 1, &dim_) < cmp_dis)
+                l = mid + 1;
+            else
+                r = mid;
+        }
+        assert(l >= 1);
+        assert(l < *link);
+        return l;
+    }
+
+    void adjust(idx_t p, idx_t* link) {
+        auto cmp_dis = ms_->full_dist(getDataByID(p), link + R_ + 1, &dim_);
+        auto pos = bin(link, cmp_dis);
+        for (int i = *link; i > pos; i --) {
+            std::swap(link[i], link[i - 1]);
+        }
+    }
+
+    void make_edge2(const idx_t p, const float alpha) {
+        auto link = getLinkByID(p);
+        for (auto i = 1; i <= *link; i ++) {
+            auto neighbor_link = getLinkByID(link[i]);
+            std::unique_lock<std::mutex> lk(link_list_locks_[link[i]]);
+            if (!isDuplicate(p, neighbor_link)) {
+                if (*neighbor_link < R_) {
+                    (*neighbor_link) ++;
+                    neighbor_link[*neighbor_link] = p;
+                    adjust(p, neighbor_link);
+                } else {
+                    lk.unlock();
+                    std::vector<std::pair<dist_t, idx_t>> pruneCandi;
+                    auto dist = ms_->full_dist(getDataByID(p), getDataByID(link[i]), &dim_);
+                    pruneCandi.push_back(std::pair<dist_t, idx_t>(dist, p));
+                    for (auto j = 1; j <= *neighbor_link; j ++) {
+                        pruneCandi.push_back(std::pair<dist_t, idx_t>(ms_->full_dist(getDataByID(link[i]), getDataByID(neighbor_link[j]), &dim_), neighbor_link[j]));
+                        adjust(pruneCandi);
                     }
                     robustPrune(link[i], pruneCandi, alpha, 3);
                 }
